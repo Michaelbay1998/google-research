@@ -58,6 +58,7 @@ test:
   n_class: 21
   num_chunks: 1
   chunk_index: 0
+  # For Pascal VOC, index 0 is bg. Set to True to evaluate with no bg.
   ignore_background: False
 
 save_path: "./outputs"

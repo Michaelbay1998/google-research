@@ -19,6 +19,7 @@
 #include <atomic>
 #include <cstdint>
 #include <string>
+#include <type_traits>
 #include <utility>
 
 #include "absl/base/optimization.h"
@@ -43,9 +44,9 @@ class FastTopNeighbors {
     Init(max_results, epsilon);
   }
 
-  FastTopNeighbors(FastTopNeighbors&& rhs) { *this = std::move(rhs); }
+  FastTopNeighbors(FastTopNeighbors&& rhs) noexcept { *this = std::move(rhs); }
 
-  FastTopNeighbors& operator=(FastTopNeighbors&& rhs) {
+  FastTopNeighbors& operator=(FastTopNeighbors&& rhs) noexcept {
     indices_ = std::move(rhs.indices_);
     distances_ = std::move(rhs.distances_);
     masks_ = std::move(rhs.masks_);
@@ -167,6 +168,10 @@ class FastTopNeighbors {
     return std::make_pair(indices, dists);
   }
 
+  ConstSpan<DatapointIndexT> GetAllRawIndices() const {
+    return MutableSpan<DatapointIndexT>(indices_.get(), sz_);
+  }
+
   pair<MutableSpan<DatapointIndexT>, MutableSpan<DistT>> FinishSorted();
 
   void FinishUnsorted(std::vector<pair<DatapointIndexT, DistT>>* results) {
@@ -188,6 +193,8 @@ class FastTopNeighbors {
                         DistanceComparatorBranchOptimized());
   }
 
+  void GarbageCollect(size_t keep_min, size_t keep_max);
+
  protected:
   unique_ptr<DatapointIndexT[]> indices_;
 
@@ -198,8 +205,6 @@ class FastTopNeighbors {
   bool mutator_held_ = false;
 
  private:
-  void GarbageCollect(size_t keep_min, size_t keep_max);
-
   SCANN_INLINE void GarbageCollectApproximate() {
     if (capacity_ < max_capacity_) {
       return ReallocateForPureEnn();
@@ -329,30 +334,32 @@ void PushBlockToFastTopNeighbors(ConstSpan<DistT> distances, DocidFn docid_fn,
   top_n->AcquireMutator(&mutator);
   DatapointIndex dist_idx = 0;
 
-#ifdef __SSE4_1__
-  if constexpr (std::is_same_v<DistT, float>) {
-    Sse4<float> sse_epsilon = mutator.epsilon();
-    constexpr size_t kNumFloatsPerSimdRegister =
-        Sse4<float>::kElementsPerRegister;
-    const size_t num_sse4_registers =
+#if HWY_HAVE_SCALABLE == 0
+
+  if constexpr (std::is_same_v<DistT, float> &&
+                highway::Simd<float>::kElementsPerRegister >= 2) {
+    using Simd = highway::Simd<float>;
+    Simd simd_epsilon = mutator.epsilon();
+    constexpr size_t kNumFloatsPerSimdRegister = Simd::kElementsPerRegister;
+    const size_t num_simd_registers =
         distances.size() / kNumFloatsPerSimdRegister;
-    for (uint32_t simd_idx : Seq(num_sse4_registers)) {
+    for (uint32_t simd_idx : Seq(num_simd_registers)) {
       const uint32_t i0 = simd_idx * kNumFloatsPerSimdRegister;
-      Sse4<float> simd_dists = Sse4<float>::Load(&distances[i0]);
-      int push_mask = GetComparisonMask(simd_dists <= sse_epsilon);
+      Simd simd_dists = Simd::Load(&distances[i0]);
+      int push_mask = GetComparisonMask(simd_dists <= simd_epsilon);
       while (ABSL_PREDICT_FALSE(push_mask)) {
         const int offset = bits::FindLSBSetNonZero(push_mask);
         push_mask &= (push_mask - 1);
-        if (ABSL_PREDICT_FALSE(
-                mutator.Push(docid_fn(i0 + offset), (*simd_dists)[offset]))) {
+        if (ABSL_PREDICT_FALSE(mutator.Push(docid_fn(i0 + offset),
+                                            simd_dists.ExtractLane(offset)))) {
           mutator.GarbageCollect();
-          sse_epsilon = mutator.epsilon();
+          simd_epsilon = mutator.epsilon();
 
-          push_mask &= GetComparisonMask(simd_dists < sse_epsilon);
+          push_mask &= GetComparisonMask(simd_dists < simd_epsilon);
         }
       }
     }
-    dist_idx = num_sse4_registers * kNumFloatsPerSimdRegister;
+    dist_idx = num_simd_registers * kNumFloatsPerSimdRegister;
   }
 #endif
 
@@ -372,6 +379,7 @@ extern template class FastTopNeighbors<int16_t, uint32_t>;
 extern template class FastTopNeighbors<float, uint32_t>;
 extern template class FastTopNeighbors<int16_t, uint64_t>;
 extern template class FastTopNeighbors<float, uint64_t>;
+extern template class FastTopNeighbors<int16_t, absl::uint128>;
 extern template class FastTopNeighbors<float, absl::uint128>;
 
 extern template class FastTopNeighbors<float, pair<uint64_t, uint64_t>>;

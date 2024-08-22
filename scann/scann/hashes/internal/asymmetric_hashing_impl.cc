@@ -440,11 +440,11 @@ Status AhImpl<T>::IndexDatapointNoiseShaped(
   SCANN_RET_CHECK_EQ(result.size(), centers.size());
   SCANN_RET_CHECK_EQ(maybe_residual_dptr.dimensionality(),
                      original_dptr.dimensionality());
+  SCANN_RETURN_IF_ERROR(ValidateNoiseShapingParams(threshold, eta));
   TF_ASSIGN_OR_RETURN(auto residual_stats,
                       ComputeResidualStats(maybe_residual_dptr, original_dptr,
                                            centers, projection));
 
-  SCANN_RETURN_IF_ERROR(ValidateNoiseShapingParams(threshold, eta));
   const double parallel_cost_multiplier =
       std::isnan(eta) ? ComputeParallelCostMultiplier(
                             threshold, SquaredL2Norm(original_dptr),
@@ -587,7 +587,7 @@ vector<T> ConvertLookupToFixedPoint(
   if (conversion_options.multiplier_quantile() == 1.0f) {
     if (conversion_options.float_to_int_conversion_method() == kRound) {
       return ConvertLookupToFixedPointImpl<T>(
-          raw_lookup, [](float f) { return std::lround(f); }, *multiplier);
+          raw_lookup, [](float f) { return std::round(f); }, *multiplier);
     } else {
       return ConvertLookupToFixedPointImpl<T>(
           raw_lookup, [](float f) { return static_cast<SignedT>(f); },
@@ -602,7 +602,7 @@ vector<T> ConvertLookupToFixedPoint(
       return ConvertLookupToFixedPointImpl<T>(
           raw_lookup,
           [&](float f) {
-            return static_cast<SignedT>(std::lround(compress_to_bounds(f)));
+            return static_cast<SignedT>(std::round(compress_to_bounds(f)));
           },
           *multiplier);
     } else {
